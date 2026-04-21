@@ -1,0 +1,31 @@
+python3 -m venv finenv
+source finenv/bin/activate
+
+pip install -r requirements.txt
+
+
+
+
+# 🔥 Load .env file
+load_dotenv()
+
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+if HF_TOKEN:
+    from huggingface_hub import login
+    login(token=HF_TOKEN)
+    print("✅ Hugging Face login successful")
+else:
+    print("⚠️ No HF token found (will fail if model is gated)")
+
+
+
+
+
+
+    "tiiuae/falcon-7b"
+
+    "NousResearch/Meta-Llama-3-8B"
+
+    "mistralai/Mistral-7B-v0.1"
+    "NousResearch/Llama-2-7b-chat-hf"
