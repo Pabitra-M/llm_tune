@@ -204,6 +204,21 @@ lora = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
+lora = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    target_modules=[
+        "query_key_value",   # Falcon attention
+        "dense",             # output
+        "dense_h_to_4h",     # MLP up
+        "dense_4h_to_h",     # MLP down
+    ],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
+
+
 model = get_peft_model(model, lora)
 
 # =========================================================
