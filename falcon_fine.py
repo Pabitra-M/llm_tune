@@ -133,7 +133,6 @@ trainer = SFTTrainer(
     processing_class=tokenizer, 
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    dataset_text_field="text",
     max_seq_length=MAX_SEQ_LEN,
     args=training_args,
 )
