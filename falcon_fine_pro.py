@@ -14,7 +14,6 @@ MAX_WAIT      = 3600
 
 def wait_for_gpu(min_free_mib=MIN_FREE_MIB, poll_interval=POLL_INTERVAL):
     start_time = time.time()
-    attempt = 0
 
     while True:
         try:
@@ -62,10 +61,13 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+# FIX 1: Use SFTConfig instead of TrainingArguments — new trl API moves
+#         SFT-specific args (dataset_text_field, max_seq_length, packing)
+#         into SFTConfig. Using TrainingArguments + passing them to SFTTrainer
+#         causes TypeError.
+from trl import SFTTrainer, SFTConfig
 from rouge_score import rouge_scorer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.tokenize import word_tokenize
@@ -177,33 +179,33 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.float16,
 )
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
     quantization_config=bnb_config,
     device_map="auto",
+    trust_remote_code=True,
     max_memory={0: "6GB", "cpu": "32GB"},
     offload_folder="offload",
 )
 
-model = prepare_model_for_kbit_training(model)
-model.gradient_checkpointing_enable()
+model.config.use_cache = False
+
+# FIX 2: Call prepare_model_for_kbit_training with use_gradient_checkpointing=True
+#         and do NOT call model.gradient_checkpointing_enable() separately —
+#         prepare_model_for_kbit_training handles it internally, calling it
+#         twice causes a conflict.
+model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
 # =========================================================
 # LoRA
 # =========================================================
 
-lora = LoraConfig(
-    r=16,
-    lora_alpha=32,
-    target_modules=["q_proj","k_proj","v_proj","o_proj"],
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM",
-)
-
+# FIX 3: Removed the duplicate LoraConfig definition. The first block targeted
+#         LLaMA-style modules (q_proj etc.) which don't exist in Falcon — only
+#         the second block with Falcon-correct modules should remain.
 lora = LoraConfig(
     r=16,
     lora_alpha=32,
@@ -218,14 +220,18 @@ lora = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-
 model = get_peft_model(model, lora)
+model.print_trainable_parameters()
 
 # =========================================================
 # TRAIN
 # =========================================================
 
-args = TrainingArguments(
+# FIX 1 (continued): SFTConfig replaces TrainingArguments. SFT-specific fields
+#                    (dataset_text_field, max_seq_length, packing) live here.
+#                    gradient_checkpointing=True is also set here, not in
+#                    TrainingArguments separately.
+sft_config = SFTConfig(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
@@ -233,25 +239,30 @@ args = TrainingArguments(
     learning_rate=LR,
     fp16=True,
     logging_steps=10,
-    evaluation_strategy="epoch",
+    eval_strategy="epoch",
     save_strategy="epoch",
     gradient_checkpointing=True,
     optim="paged_adamw_8bit",
     report_to="none",
+    # SFT-specific
+    dataset_text_field="text",
+    max_seq_length=MAX_SEQ_LEN,
+    packing=False,
 )
 
 trainer = SFTTrainer(
     model=model,
-    tokenizer=tokenizer,
-    train_dataset=train_dataset,
+    processing_class=tokenizer,   # FIX 4: 'tokenizer=' is deprecated in new trl,
+    train_dataset=train_dataset,  #         use 'processing_class=' instead.
     eval_dataset=eval_dataset,
-    dataset_text_field="text",
-    max_seq_length=MAX_SEQ_LEN,
-    args=args,
+    args=sft_config,
 )
 
 print("Training...")
 trainer.train()
+
+model.save_pretrained(OUTPUT_DIR)
+tokenizer.save_pretrained(OUTPUT_DIR)
 
 # =========================================================
 # INFERENCE
@@ -269,7 +280,7 @@ def ask(q):
             max_new_tokens=200,
             do_sample=False,
             num_beams=3,
-            length_penalty=0.8
+            length_penalty=0.8,
         )
 
     text = tokenizer.decode(out[0], skip_special_tokens=True)
@@ -289,7 +300,7 @@ def compute_prf(pred, ref):
 
     precision = overlap / len(p) if len(p) else 0
     recall    = overlap / len(r) if len(r) else 0
-    f1 = 2 * precision * recall / (precision + recall) if precision+recall else 0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0
 
     return precision, recall, f1
 
@@ -309,7 +320,7 @@ def evaluate():
         bleu = sentence_bleu(
             [tokenize(ref)],
             tokenize(pred),
-            smoothing_function=SmoothingFunction().method1
+            smoothing_function=SmoothingFunction().method1,
         )
 
         rouge = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)\
