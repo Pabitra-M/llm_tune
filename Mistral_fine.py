@@ -123,7 +123,7 @@ training_args = TrainingArguments(
     learning_rate=LR,
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
-    fp16=True,                          # use bf16=True on A100/H100
+    bf16=True,                          # use bf16=True on A100/H100
     logging_steps=10,
     evaluation_strategy="epoch",
     save_strategy="epoch",
