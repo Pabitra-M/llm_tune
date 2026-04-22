@@ -104,11 +104,11 @@ MODEL_ID = "mistralai/Mistral-7B-v0.1"
 DATASET_PATH = "clean_dataset.json"
 OUTPUT_DIR = "./Mistral_qlora-output"
 
-MAX_SEQ_LEN = 256
+MAX_SEQ_LEN = 1028
 EPOCHS = 3
-BATCH_SIZE = 1
+BATCH_SIZE = 3
 GRAD_ACCUM = 8
-LR = 2e-4
+LR = 1e-5
 
 MIN_CONFIDENCE = 0.4
 MIN_ANSWER_WORDS = 80
