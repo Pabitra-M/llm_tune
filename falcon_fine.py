@@ -87,13 +87,6 @@ model = AutoModelForCausalLM.from_pretrained(
 
 model.config.use_cache = False
 
-# ── FIX 1: Remove deprecated _set_gradient_checkpointing from Falcon's class.
-#    Falcon's modeling file defines this old method which clashes with newer
-#    PEFT/transformers. Deleting it from the class makes the library fall back
-#    to the correct modern implementation automatically. ───────────────────────
-if hasattr(model, "_set_gradient_checkpointing"):
-    del model.__class__._set_gradient_checkpointing
-
 model = prepare_model_for_kbit_training(
     model,
     use_gradient_checkpointing=True,
@@ -232,4 +225,3 @@ evaluate()
 
 # ── 10. TEST ──────────────────────────────────────────
 
-print(ask("What is the official URL for SBI login?"))
