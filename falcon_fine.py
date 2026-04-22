@@ -17,7 +17,7 @@ from transformers import (
     TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 # Metrics
 from sacrebleu import corpus_bleu
@@ -86,11 +86,20 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 model.config.use_cache = False
-model.gradient_checkpointing_enable()
 
-model = prepare_model_for_kbit_training(model)
+# ── FIX 1: Remove deprecated _set_gradient_checkpointing from Falcon's class.
+#    Falcon's modeling file defines this old method which clashes with newer
+#    PEFT/transformers. Deleting it from the class makes the library fall back
+#    to the correct modern implementation automatically. ───────────────────────
+if hasattr(model, "_set_gradient_checkpointing"):
+    del model.__class__._set_gradient_checkpointing
 
-# ── 5. LoRA FIX (FALCON) ───────────────────────────────
+model = prepare_model_for_kbit_training(
+    model,
+    use_gradient_checkpointing=True,
+)
+
+# ── 5. LoRA CONFIG (FALCON) ────────────────────────────
 
 lora_config = LoraConfig(
     r=16,
@@ -111,7 +120,10 @@ model.print_trainable_parameters()
 
 # ── 6. TRAINING ───────────────────────────────────────
 
-training_args = TrainingArguments(
+# ── FIX 2: New trl API uses SFTConfig (not TrainingArguments) and all
+#    SFT-specific args (max_seq_length, dataset_text_field, packing) now
+#    belong inside SFTConfig, NOT as kwargs to SFTTrainer(). ──────────────────
+sft_config = SFTConfig(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
@@ -126,6 +138,10 @@ training_args = TrainingArguments(
     load_best_model_at_end=True,
     report_to="none",
     optim="paged_adamw_8bit",
+    # SFT-specific fields live here now
+    max_seq_length=MAX_SEQ_LEN,
+    dataset_text_field="text",
+    packing=False,
 )
 
 trainer = SFTTrainer(
@@ -133,11 +149,7 @@ trainer = SFTTrainer(
     processing_class=tokenizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    dataset_text_field="text",   # ← points to the "text" key in your Dataset
-    max_seq_length=MAX_SEQ_LEN,
-    dataset_num_proc=2,          # ← parallel tokenisation, optional but helpful
-    packing=False,               # ← explicit; avoids length-mismatch warnings
-    args=training_args,
+    args=sft_config,            # pass SFTConfig, not TrainingArguments
 )
 
 print("🚀 Training...")
@@ -177,7 +189,6 @@ def evaluate():
         r = text.split("### Answer:")[1].strip()
 
         p = ask(q)
-
         preds.append(p)
         refs.append(r)
 
@@ -193,38 +204,30 @@ def evaluate():
         r1.append(score["rouge1"].fmeasure)
         rL.append(score["rougeL"].fmeasure)
 
-    avg_r1 = sum(r1)/len(r1)
-    avg_rL = sum(rL)/len(rL)
+    avg_r1 = sum(r1) / len(r1)
+    avg_rL = sum(rL) / len(rL)
 
     # Precision / Recall / F1 (token overlap)
     P, R, F = [], [], []
 
     for p, r in zip(preds, refs):
         p_set, r_set = set(p.split()), set(r.split())
-
-        tp = len(p_set & r_set)
-
+        tp        = len(p_set & r_set)
         precision = tp / len(p_set) if p_set else 0
-        recall = tp / len(r_set) if r_set else 0
-        f1 = (2*precision*recall)/(precision+recall) if (precision+recall) else 0
-
+        recall    = tp / len(r_set) if r_set else 0
+        f1        = (2 * precision * recall) / (precision + recall) if (precision + recall) else 0
         P.append(precision)
         R.append(recall)
         F.append(f1)
-
-    precision = sum(P)/len(P)
-    recall = sum(R)/len(R)
-    f1 = sum(F)/len(F)
 
     print("\n📊 Evaluation Results")
     print(f"BLEU:      {bleu:.4f}")
     print(f"ROUGE-1:   {avg_r1:.4f}")
     print(f"ROUGE-L:   {avg_rL:.4f}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall:    {recall:.4f}")
-    print(f"F1 Score:  {f1:.4f}")
+    print(f"Precision: {sum(P)/len(P):.4f}")
+    print(f"Recall:    {sum(R)/len(R):.4f}")
+    print(f"F1 Score:  {sum(F)/len(F):.4f}")
 
-# Run evaluation
 evaluate()
 
 # ── 10. TEST ──────────────────────────────────────────
