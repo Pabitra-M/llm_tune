@@ -21,7 +21,7 @@ from trl import SFTTrainer
 # ── 1. Settings — edit these ─────────────────────────────────────────────────
 
 MODEL_ID       = "tiiuae/falcon-7b"   # swap for any HF causal LM
-DATASET_PATH   = "your_dataset.json"            # path to your JSON file
+DATASET_PATH   = "clean_dataset.json"            # path to your JSON file
 OUTPUT_DIR     = "./falcon_qlora-output"
 MAX_SEQ_LEN    = 512
 EPOCHS         = 3
