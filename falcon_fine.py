@@ -130,10 +130,13 @@ training_args = TrainingArguments(
 
 trainer = SFTTrainer(
     model=model,
-    processing_class=tokenizer, 
+    processing_class=tokenizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
+    dataset_text_field="text",   # ← points to the "text" key in your Dataset
     max_seq_length=MAX_SEQ_LEN,
+    dataset_num_proc=2,          # ← parallel tokenisation, optional but helpful
+    packing=False,               # ← explicit; avoids length-mismatch warnings
     args=training_args,
 )
 
