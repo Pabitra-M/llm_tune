@@ -113,8 +113,6 @@ BATCH_SIZE = 1
 GRAD_ACCUM = 8
 LR = 2e-4
 
-MIN_CONFIDENCE = 0.4
-MIN_ANSWER_WORDS = 80
 
 # =========================================================
 # DATA CLEANING
@@ -126,12 +124,7 @@ def clean_answer(text):
     return text.strip()
 
 def is_valid_record(rec):
-    return (
-        not rec.get("hallucinated", False)
-        and rec.get("confidence", 1.0) >= MIN_CONFIDENCE
-        and rec.get("question")
-        and rec.get("answer")
-    )
+    return bool(rec.get("question") and rec.get("answer"))
 
 # =========================================================
 # LOAD DATASET
@@ -155,9 +148,6 @@ def load_qa_dataset(path):
         q = r["question"].strip()
         a = clean_answer(r["answer"])
 
-        if len(a.split()) < MIN_ANSWER_WORDS:
-            continue
-
         text = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{q} [/INST] {a} </s>"
         data.append({"text": text, "question": q, "answer": a})
 
@@ -165,47 +155,12 @@ def load_qa_dataset(path):
 
 dataset = load_qa_dataset(DATASET_PATH)
 
-# ── DATASET DIAGNOSTICS ───────────────────────────────────────────────────────
-# If the dataset is empty, re-scan the raw file and print exactly which filter
-# is killing your records, so you know which threshold to relax.
-print(f"\n[DATA] Records after filtering: {len(dataset)}")
-
-if len(dataset) == 0:
-    with open(DATASET_PATH, "r") as f:
-        raw = f.read().strip()
-    try:
-        records = json.loads(raw)
-    except:
-        records = [json.loads(line) for line in raw.splitlines()]
-
-    total        = len(records)
-    hallucinated = sum(1 for r in records if r.get("hallucinated", False))
-    low_conf     = sum(1 for r in records if r.get("confidence", 1.0) < MIN_CONFIDENCE)
-    missing_qa   = sum(1 for r in records if not r.get("question") or not r.get("answer"))
-    short_ans    = sum(
-        1 for r in records
-        if r.get("answer") and len(clean_answer(r["answer"]).split()) < MIN_ANSWER_WORDS
-    )
-
-    print(f"\n[DATA] Raw records in file          : {total}")
-    print(f"[DATA] Dropped — hallucinated=True  : {hallucinated}")
-    print(f"[DATA] Dropped — confidence < {MIN_CONFIDENCE}    : {low_conf}")
-    print(f"[DATA] Dropped — missing Q or A     : {missing_qa}")
-    print(f"[DATA] Dropped — answer < {MIN_ANSWER_WORDS} words : {short_ans}")
-    print(f"\n[DATA] SUGGESTIONS:")
-    print(f"[DATA]   Lower MIN_CONFIDENCE  (currently {MIN_CONFIDENCE})")
-    print(f"[DATA]   Lower MIN_ANSWER_WORDS (currently {MIN_ANSWER_WORDS})")
-    print(f"[DATA]   Verify JSON keys are 'question' and 'answer'")
-
-    raise ValueError(
-        f"train_dataset is empty — all {total} records were filtered out. "
-        "See diagnostics printed above."
-    )
+print(f"[DATA] Records loaded: {len(dataset)}")
 
 if len(dataset) < 2:
     raise ValueError(
-        f"Only {len(dataset)} record(s) survived filtering — need at least 2 "
-        "for a train/test split. Lower MIN_ANSWER_WORDS or MIN_CONFIDENCE."
+        f"Dataset has only {len(dataset)} record(s) — check that your JSON "
+        "has 'question' and 'answer' keys and is not empty."
     )
 
 split = dataset.train_test_split(test_size=0.05, seed=42)
