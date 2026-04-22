@@ -164,10 +164,56 @@ def load_qa_dataset(path):
     return Dataset.from_list(data)
 
 dataset = load_qa_dataset(DATASET_PATH)
-split = dataset.train_test_split(test_size=0.05)
+
+# ── DATASET DIAGNOSTICS ───────────────────────────────────────────────────────
+# If the dataset is empty, re-scan the raw file and print exactly which filter
+# is killing your records, so you know which threshold to relax.
+print(f"\n[DATA] Records after filtering: {len(dataset)}")
+
+if len(dataset) == 0:
+    with open(DATASET_PATH, "r") as f:
+        raw = f.read().strip()
+    try:
+        records = json.loads(raw)
+    except:
+        records = [json.loads(line) for line in raw.splitlines()]
+
+    total        = len(records)
+    hallucinated = sum(1 for r in records if r.get("hallucinated", False))
+    low_conf     = sum(1 for r in records if r.get("confidence", 1.0) < MIN_CONFIDENCE)
+    missing_qa   = sum(1 for r in records if not r.get("question") or not r.get("answer"))
+    short_ans    = sum(
+        1 for r in records
+        if r.get("answer") and len(clean_answer(r["answer"]).split()) < MIN_ANSWER_WORDS
+    )
+
+    print(f"\n[DATA] Raw records in file          : {total}")
+    print(f"[DATA] Dropped — hallucinated=True  : {hallucinated}")
+    print(f"[DATA] Dropped — confidence < {MIN_CONFIDENCE}    : {low_conf}")
+    print(f"[DATA] Dropped — missing Q or A     : {missing_qa}")
+    print(f"[DATA] Dropped — answer < {MIN_ANSWER_WORDS} words : {short_ans}")
+    print(f"\n[DATA] SUGGESTIONS:")
+    print(f"[DATA]   Lower MIN_CONFIDENCE  (currently {MIN_CONFIDENCE})")
+    print(f"[DATA]   Lower MIN_ANSWER_WORDS (currently {MIN_ANSWER_WORDS})")
+    print(f"[DATA]   Verify JSON keys are 'question' and 'answer'")
+
+    raise ValueError(
+        f"train_dataset is empty — all {total} records were filtered out. "
+        "See diagnostics printed above."
+    )
+
+if len(dataset) < 2:
+    raise ValueError(
+        f"Only {len(dataset)} record(s) survived filtering — need at least 2 "
+        "for a train/test split. Lower MIN_ANSWER_WORDS or MIN_CONFIDENCE."
+    )
+
+split = dataset.train_test_split(test_size=0.05, seed=42)
 
 train_dataset = split["train"]
 eval_dataset  = split["test"]
+
+print(f"[DATA] Train: {len(train_dataset)} | Eval: {len(eval_dataset)}\n")
 
 # =========================================================
 # MODEL
