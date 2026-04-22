@@ -70,7 +70,6 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 from rouge_score import rouge_scorer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-from nltk.tokenize import word_tokenize
 from collections import Counter
 
 # =========================================================
@@ -292,7 +291,7 @@ def ask(q):
 # =========================================================
 
 def tokenize(x):
-    return word_tokenize(x.lower())
+    return x.lower().split()
 
 def compute_prf(pred, ref):
     p = Counter(tokenize(pred))

@@ -14,6 +14,7 @@ MAX_WAIT      = 3600
 
 def wait_for_gpu(min_free_mib=MIN_FREE_MIB, poll_interval=POLL_INTERVAL):
     start_time = time.time()
+    attempt = 0
 
     while True:
         try:
@@ -61,15 +62,13 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-# FIX 1: Use SFTConfig instead of TrainingArguments — new trl API moves
-#         SFT-specific args (dataset_text_field, max_seq_length, packing)
-#         into SFTConfig. Using TrainingArguments + passing them to SFTTrainer
-#         causes TypeError.
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
 from rouge_score import rouge_scorer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from nltk.tokenize import word_tokenize
 from collections import Counter
 
 # =========================================================
@@ -102,9 +101,9 @@ Your goal is to replace links with useful knowledge.
 # SETTINGS
 # =========================================================
 
-MODEL_ID = "tiiuae/falcon-7b"
+MODEL_ID = "NousResearch/Llama-2-7b-chat-hf"
 DATASET_PATH = "clean_dataset.json"
-OUTPUT_DIR = "./falcon_qlora-output"
+OUTPUT_DIR = "./Llama2_qlora-output"
 
 MAX_SEQ_LEN = 256
 EPOCHS = 3
@@ -112,6 +111,8 @@ BATCH_SIZE = 1
 GRAD_ACCUM = 8
 LR = 2e-4
 
+MIN_CONFIDENCE = 0.4
+MIN_ANSWER_WORDS = 80
 
 # =========================================================
 # DATA CLEANING
@@ -123,7 +124,12 @@ def clean_answer(text):
     return text.strip()
 
 def is_valid_record(rec):
-    return bool(rec.get("question") and rec.get("answer"))
+    return (
+        not rec.get("hallucinated", False)
+        and rec.get("confidence", 1.0) >= MIN_CONFIDENCE
+        and rec.get("question")
+        and rec.get("answer")
+    )
 
 # =========================================================
 # LOAD DATASET
@@ -147,27 +153,19 @@ def load_qa_dataset(path):
         q = r["question"].strip()
         a = clean_answer(r["answer"])
 
+        if len(a.split()) < MIN_ANSWER_WORDS:
+            continue
+
         text = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{q} [/INST] {a} </s>"
         data.append({"text": text, "question": q, "answer": a})
 
     return Dataset.from_list(data)
 
 dataset = load_qa_dataset(DATASET_PATH)
-
-print(f"[DATA] Records loaded: {len(dataset)}")
-
-if len(dataset) < 2:
-    raise ValueError(
-        f"Dataset has only {len(dataset)} record(s) — check that your JSON "
-        "has 'question' and 'answer' keys and is not empty."
-    )
-
-split = dataset.train_test_split(test_size=0.05, seed=42)
+split = dataset.train_test_split(test_size=0.05)
 
 train_dataset = split["train"]
 eval_dataset  = split["test"]
-
-print(f"[DATA] Train: {len(train_dataset)} | Eval: {len(eval_dataset)}\n")
 
 # =========================================================
 # MODEL
@@ -179,59 +177,40 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.float16,
 )
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 tokenizer.pad_token = tokenizer.eos_token
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
     quantization_config=bnb_config,
     device_map="auto",
-    trust_remote_code=True,
     max_memory={0: "6GB", "cpu": "32GB"},
     offload_folder="offload",
 )
 
-model.config.use_cache = False
-
-# FIX 2: Call prepare_model_for_kbit_training with use_gradient_checkpointing=True
-#         and do NOT call model.gradient_checkpointing_enable() separately —
-#         prepare_model_for_kbit_training handles it internally, calling it
-#         twice causes a conflict.
-model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+model = prepare_model_for_kbit_training(model)
+model.gradient_checkpointing_enable()
 
 # =========================================================
 # LoRA
 # =========================================================
 
-# FIX 3: Removed the duplicate LoraConfig definition. The first block targeted
-#         LLaMA-style modules (q_proj etc.) which don't exist in Falcon — only
-#         the second block with Falcon-correct modules should remain.
 lora = LoraConfig(
     r=16,
     lora_alpha=32,
-    target_modules=[
-        "query_key_value",   # Falcon attention
-        "dense",             # output
-        "dense_h_to_4h",     # MLP up
-        "dense_4h_to_h",     # MLP down
-    ],
+    target_modules=["q_proj","k_proj","v_proj","o_proj"],
     lora_dropout=0.05,
     bias="none",
     task_type="CAUSAL_LM",
 )
 
 model = get_peft_model(model, lora)
-model.print_trainable_parameters()
 
 # =========================================================
 # TRAIN
 # =========================================================
 
-# FIX 1 (continued): SFTConfig replaces TrainingArguments. SFT-specific fields
-#                    (dataset_text_field, max_seq_length, packing) live here.
-#                    gradient_checkpointing=True is also set here, not in
-#                    TrainingArguments separately.
-sft_config = SFTConfig(
+args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
@@ -239,30 +218,25 @@ sft_config = SFTConfig(
     learning_rate=LR,
     fp16=True,
     logging_steps=10,
-    eval_strategy="epoch",
+    evaluation_strategy="epoch",
     save_strategy="epoch",
     gradient_checkpointing=True,
     optim="paged_adamw_8bit",
     report_to="none",
-    # SFT-specific
-    dataset_text_field="text",
-    max_seq_length=MAX_SEQ_LEN,
-    packing=False,
 )
 
 trainer = SFTTrainer(
     model=model,
-    processing_class=tokenizer,   # FIX 4: 'tokenizer=' is deprecated in new trl,
-    train_dataset=train_dataset,  #         use 'processing_class=' instead.
+    tokenizer=tokenizer,
+    train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    args=sft_config,
+    dataset_text_field="text",
+    max_seq_length=MAX_SEQ_LEN,
+    args=args,
 )
 
 print("Training...")
 trainer.train()
-
-model.save_pretrained(OUTPUT_DIR)
-tokenizer.save_pretrained(OUTPUT_DIR)
 
 # =========================================================
 # INFERENCE
@@ -280,7 +254,7 @@ def ask(q):
             max_new_tokens=200,
             do_sample=False,
             num_beams=3,
-            length_penalty=0.8,
+            length_penalty=0.8
         )
 
     text = tokenizer.decode(out[0], skip_special_tokens=True)
@@ -291,7 +265,7 @@ def ask(q):
 # =========================================================
 
 def tokenize(x):
-    return x.lower().split()
+    return word_tokenize(x.lower())
 
 def compute_prf(pred, ref):
     p = Counter(tokenize(pred))
@@ -300,7 +274,7 @@ def compute_prf(pred, ref):
 
     precision = overlap / len(p) if len(p) else 0
     recall    = overlap / len(r) if len(r) else 0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0
+    f1 = 2 * precision * recall / (precision + recall) if precision+recall else 0
 
     return precision, recall, f1
 
@@ -320,7 +294,7 @@ def evaluate():
         bleu = sentence_bleu(
             [tokenize(ref)],
             tokenize(pred),
-            smoothing_function=SmoothingFunction().method1,
+            smoothing_function=SmoothingFunction().method1
         )
 
         rouge = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)\
