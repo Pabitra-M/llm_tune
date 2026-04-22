@@ -121,7 +121,7 @@ training_args = TrainingArguments(
     warmup_ratio=0.05,
     fp16=True,
     logging_steps=10,
-    evaluation_strategy="epoch",
+    eval_strategy="epoch"
     save_strategy="epoch",
     load_best_model_at_end=True,
     report_to="none",
@@ -130,7 +130,7 @@ training_args = TrainingArguments(
 
 trainer = SFTTrainer(
     model=model,
-    tokenizer=tokenizer,
+    processing_class=tokenizer, 
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     dataset_text_field="text",
