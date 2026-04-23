@@ -21,13 +21,13 @@ from trl import SFTTrainer
 # ── 1. Settings — edit these ─────────────────────────────────────────────────
 
 MODEL_ID       = "NousResearch/Llama-2-7b-chat-hf"   # swap for any HF causal LM
-DATASET_PATH   = "clean_dataset.json"            # path to your JSON file
-OUTPUT_DIR     = "./Llama_qlora-output"
-MAX_SEQ_LEN    = 512
-EPOCHS         = 3
-BATCH_SIZE     = 4
-GRAD_ACCUM     = 4
-LR             = 2e-4
+DATASET_PATH   = "new_created_datset.json"            # path to your JSON file
+OUTPUT_DIR     = "./Llama_qlora-output_cl"
+MAX_SEQ_LEN = 1028
+EPOCHS      = 7      # FIX 3: 3 epochs too few — 7 gives the model time to
+LR          = 1e-4   #         learn the no-URL constraint properly.
+BATCH_SIZE  = 4     # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
+GRAD_ACCUM  = 8 
 
 # ── 2. Load & format your dataset ────────────────────────────────────────────
 

@@ -26,14 +26,14 @@ from rouge_score import rouge_scorer
 # ── 1. SETTINGS ────────────────────────────────────────
 
 MODEL_ID = "tiiuae/falcon-7b"
-DATASET_PATH = "clean_dataset.json"
-OUTPUT_DIR = "./falcon_qlora-output"
+DATASET_PATH = "new_created_datset.json"
+OUTPUT_DIR = "./falcon_qlora-output_cl"
 
-MAX_SEQ_LEN = 512
-EPOCHS = 3
-BATCH_SIZE = 4
-GRAD_ACCUM = 4
-LR = 2e-4
+MAX_SEQ_LEN = 1028
+EPOCHS      = 7      # FIX 3: 3 epochs too few — 7 gives the model time to
+LR          = 1e-4   #         learn the no-URL constraint properly.
+BATCH_SIZE  = 4     # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
+GRAD_ACCUM  = 8  
 
 # ── 2. LOAD DATASET ────────────────────────────────────
 

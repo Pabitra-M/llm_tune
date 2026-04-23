@@ -24,8 +24,8 @@ from trl import SFTTrainer, SFTConfig
 # ── 1. Settings ───────────────────────────────────────────────────────────────
 
 MODEL_ID     = "mistralai/Mistral-7B-v0.1"
-DATASET_PATH = "clean_dataset.json"
-OUTPUT_DIR   = "./mistral_qlora-output"
+DATASET_PATH = "new_created_datset.json"
+OUTPUT_DIR   = "./mistral_qlora-output_cl"
 
 MAX_SEQ_LEN = 1028
 EPOCHS      = 7

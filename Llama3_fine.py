@@ -21,13 +21,14 @@ from trl import SFTTrainer
 # ── 1. Settings — edit these ─────────────────────────────────────────────────
 
 MODEL_ID       = "NousResearch/Meta-Llama-3-8B"  # swap for any HF causal LM
-DATASET_PATH   = "clean_dataset.json"            # path to your JSON file
-OUTPUT_DIR     = "./Llama3_qlora-output"
-MAX_SEQ_LEN    = 512
-EPOCHS         = 3
-BATCH_SIZE     = 4
-GRAD_ACCUM     = 4
-LR             = 2e-4
+DATASET_PATH   = "new_created_datset.json"            # path to your JSON file
+OUTPUT_DIR     = "./Llama3_qlora-output_cl"
+
+MAX_SEQ_LEN = 1028
+EPOCHS      = 7
+BATCH_SIZE  = 4
+GRAD_ACCUM  = 8
+LR          = 1e-4
 
 # ── 2. Load & format your dataset ────────────────────────────────────────────
 
