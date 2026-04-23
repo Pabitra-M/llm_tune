@@ -106,8 +106,8 @@ OUTPUT_DIR   = "./Mistral_qlora-output"
 
 MAX_SEQ_LEN = 1028
 EPOCHS      = 7      # FIX 3: 3 epochs too few — 7 gives the model time to
-LR          = 1e-4   #         learn the no-URL constraint properly.
-BATCH_SIZE  = 3      # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
+LR          = 1e-5   #         learn the no-URL constraint properly.
+BATCH_SIZE  = 4     # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
 GRAD_ACCUM  = 8      #         conservative for QLoRA and slows convergence.
 
 # =========================================================
