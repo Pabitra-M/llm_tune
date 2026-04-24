@@ -24,7 +24,7 @@ from trl import SFTTrainer, SFTConfig
 # ── 1. Settings ───────────────────────────────────────────────────────────────
 
 MODEL_ID     = "NousResearch/Llama-2-7b-chat-hf"
-DATASET_PATH = "new_created_datset.json"
+DATASET_PATH = "output.json"
 OUTPUT_DIR   = "./Llama2_qlora-output_cl"
 
 MAX_SEQ_LEN = 1028
