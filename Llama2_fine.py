@@ -27,10 +27,10 @@ MODEL_ID     = "NousResearch/Llama-2-7b-chat-hf"
 DATASET_PATH = "output.json"
 OUTPUT_DIR   = "./Llama2_qlora-output_cl"
 
-MAX_SEQ_LEN = 1028
+BATCH_SIZE = 3
+GRAD_ACCUM = 16
+MAX_SEQ_LEN = 512
 EPOCHS      = 7
-BATCH_SIZE  = 4
-GRAD_ACCUM  = 8
 LR          = 1e-4    # FIX 2: 1e-5 is too conservative for QLoRA — raised to 1e-4
 
 # ── 2. Load & format dataset ──────────────────────────────────────────────────
@@ -127,7 +127,7 @@ sft_config = SFTConfig(
     learning_rate=LR,
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
-    bf16=True,                  # FIX 5: bf16 → fp16; bf16 requires A100/H100.
+    fp16=True,                  # FIX 5: bf16 → fp16; bf16 requires A100/H100.
     logging_steps=10,           #         Use fp16 for broader GPU compatibility.
     eval_strategy="epoch",      # FIX 6: evaluation_strategy → eval_strategy
     save_strategy="epoch",
