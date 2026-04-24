@@ -1,11 +1,4 @@
-"""
-QLoRA Fine-Tuning Script — Custom Q&A Dataset
-Reads only `question` and `answer` fields from your JSON.
-
-Install dependencies:
-    pip install transformers peft bitsandbytes datasets trl accelerate
-"""
-
+import os
 import json
 import torch
 from datasets import Dataset
@@ -13,15 +6,15 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    # FIX 1: Removed TrainingArguments — replaced by SFTConfig
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-# FIX 1: SFTConfig replaces TrainingArguments. All SFT-specific args
-#         (dataset_text_field, max_seq_length, packing) now live inside
-#         SFTConfig, not as kwargs to SFTTrainer().
 from trl import SFTTrainer, SFTConfig
 
-# ── 1. Settings ───────────────────────────────────────────────────────────────
+# ── 0. Environment ─────────────────────────────────────────────────────────────
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+
+# ── 1. Settings ────────────────────────────────────────────────────────────────
 
 MODEL_ID     = "mistralai/Mistral-7B-v0.1"
 DATASET_PATH = "new_created_datset.json"
@@ -29,11 +22,11 @@ OUTPUT_DIR   = "./mistral_qlora-output_cl"
 
 MAX_SEQ_LEN = 1028
 EPOCHS      = 7
-BATCH_SIZE  = 4
-GRAD_ACCUM  = 8
-LR          = 1e-4    # FIX 2: 1e-5 is too conservative for QLoRA — raised to 1e-4
+BATCH_SIZE  = 2    # reduced from 4 to prevent GPU OOM
+GRAD_ACCUM  = 16   # increased to keep effective batch size = 32
+LR          = 1e-4
 
-# ── 2. Load & format dataset ──────────────────────────────────────────────────
+# ── 2. Load & format dataset ───────────────────────────────────────────────────
 
 def load_qa_dataset(path: str) -> Dataset:
     with open(path, "r", encoding="utf-8") as f:
@@ -71,7 +64,7 @@ train_dataset = split["train"]
 eval_dataset  = split["test"]
 print(f"[DATA] Train: {len(train_dataset)} | Eval: {len(eval_dataset)}")
 
-# ── 3. Quantization config ────────────────────────────────────────────────────
+# ── 3. Quantization config ─────────────────────────────────────────────────────
 
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -80,7 +73,7 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_use_double_quant=True,
 )
 
-# ── 4. Load base model + tokenizer ───────────────────────────────────────────
+# ── 4. Load base model + tokenizer ────────────────────────────────────────────
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 tokenizer.pad_token    = tokenizer.eos_token
@@ -95,16 +88,19 @@ model = AutoModelForCausalLM.from_pretrained(
 
 model.config.use_cache = False
 
-# FIX 3: Pass use_gradient_checkpointing=True here instead of calling
-#         model.gradient_checkpointing_enable() separately — calling both
-#         causes a conflict.
-model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+# FIX: use_reentrant=False prevents autograd hook conflicts that cause
+#      illegal memory access in the bitsandbytes optimizer step
+model = prepare_model_for_kbit_training(
+    model,
+    use_gradient_checkpointing=True,
+    gradient_checkpointing_kwargs={"use_reentrant": False},
+)
 
-# ── 5. LoRA config ────────────────────────────────────────────────────────────
+# ── 5. LoRA config ─────────────────────────────────────────────────────────────
 
 lora_config = LoraConfig(
-    r=32,          # FIX 4: r=16→32 for more capacity to learn output constraints
-    lora_alpha=64, #         alpha = 2*r
+    r=32,
+    lora_alpha=64,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
@@ -117,7 +113,7 @@ lora_config = LoraConfig(
 model = get_peft_model(model, lora_config)
 model.print_trainable_parameters()
 
-# ── 6. Training config ────────────────────────────────────────────────────────
+# ── 6. Training config ─────────────────────────────────────────────────────────
 
 sft_config = SFTConfig(
     output_dir=OUTPUT_DIR,
@@ -127,42 +123,55 @@ sft_config = SFTConfig(
     learning_rate=LR,
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
-    bf16=True,                  # FIX 5: bf16 → fp16; bf16 requires A100/H100.
-    logging_steps=10,           #         Use fp16 for broader GPU compatibility.
-    eval_strategy="epoch",      # FIX 6: evaluation_strategy → eval_strategy
+
+    # FIX: both bf16 and fp16 disabled — let bitsandbytes manage precision
+    # internally. Mixing fp16 with paged_adamw_8bit causes illegal memory access.
+    bf16=False,
+    fp16=False,
+
+    logging_steps=10,
+    eval_strategy="epoch",
     save_strategy="epoch",
     load_best_model_at_end=True,
-    gradient_checkpointing=True,
+
+    # FIX: gradient_checkpointing disabled here because it is already
+    # enabled inside prepare_model_for_kbit_training above.
+    # Having both active creates a double-hook conflict.
+    gradient_checkpointing=False,
+
     report_to="none",
-    optim="paged_adamw_8bit",
-    # SFT-specific — these were previously illegal kwargs on SFTTrainer()
+
+    # FIX: switched from paged_adamw_8bit → paged_adamw_32bit for
+    # numerical stability with 4-bit quantized weights
+    optim="paged_adamw_32bit",
+
     dataset_text_field="text",
     max_seq_length=MAX_SEQ_LEN,
     packing=False,
 )
 
-# ── 7. Trainer ────────────────────────────────────────────────────────────────
+# ── 7. Trainer ─────────────────────────────────────────────────────────────────
 
 trainer = SFTTrainer(
     model=model,
-    processing_class=tokenizer,  # FIX 7: tokenizer= is deprecated → processing_class=
+    processing_class=tokenizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    args=sft_config,             # SFTConfig, not TrainingArguments
+    args=sft_config,
 )
 
-# ── 8. Train ──────────────────────────────────────────────────────────────────
+# ── 8. Train ───────────────────────────────────────────────────────────────────
 
 print("Starting QLoRA fine-tuning...")
 trainer.train()
 
-# ── 9. Save ───────────────────────────────────────────────────────────────────
+# ── 9. Save ────────────────────────────────────────────────────────────────────
 
 model.save_pretrained(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
 print(f"LoRA adapter saved to {OUTPUT_DIR}")
 
-# ── 10. Inference ─────────────────────────────────────────────────────────────
+# ── 10. Inference ──────────────────────────────────────────────────────────────
 
 def ask(question: str, max_new_tokens: int = 300) -> str:
     prompt = f"### Question:\n{question}\n\n### Answer:\n"
@@ -176,13 +185,11 @@ def ask(question: str, max_new_tokens: int = 300) -> str:
             do_sample=True,
             temperature=0.7,
             top_p=0.9,
-            repetition_penalty=1.15,      # FIX 8: prevents repetitive output loops
+            repetition_penalty=1.15,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
         )
 
-    # FIX 9: Slice new token IDs before decoding — reliable vs splitting on
-    #         text markers which breaks if the answer contains "### Answer:"
     new_ids = output[0, input_len:]
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 

@@ -25,7 +25,7 @@ from trl import SFTTrainer, SFTConfig
 
 MODEL_ID     = "NousResearch/Meta-Llama-3-8B"
 DATASET_PATH = "new_created_datset.json"
-OUTPUT_DIR   = "./mistral_qlora-output_cl"
+OUTPUT_DIR   = "./Llama3_qlora-output_cl"
 
 MAX_SEQ_LEN = 1028
 EPOCHS      = 7
