@@ -1,4 +1,50 @@
+
 import os
+import subprocess
+import time
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+MIN_FREE_MIB  = 8000
+POLL_INTERVAL = 60
+MAX_WAIT      = 3600
+
+def wait_for_gpu(min_free_mib=MIN_FREE_MIB, poll_interval=POLL_INTERVAL):
+    start_time = time.time()
+
+    while True:
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=index,memory.free",
+                 "--format=csv,noheader,nounits"],
+                text=True
+            )
+            rows = [
+                (int(r.split(",")[0]), int(r.split(",")[1].strip()))
+                for r in out.strip().splitlines()
+            ]
+            best_idx, best_free = max(rows, key=lambda x: x[1])
+
+            if best_free >= min_free_mib:
+                print(f"[GPU] Using GPU {best_idx} ({best_free} MiB free)")
+                return str(best_idx)
+
+            print(f"[GPU] Waiting... GPU {best_idx} has {best_free} MiB")
+
+        except Exception as e:
+            print(f"[GPU] Error: {e}")
+
+        if time.time() - start_time > MAX_WAIT:
+            print("[GPU] Timeout → using CPU")
+            return ""
+
+        time.sleep(poll_interval)
+
+gpu_id = wait_for_gpu()
+os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+
+
+
 import json
 import torch
 from datasets import Dataset
