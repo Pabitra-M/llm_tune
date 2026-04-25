@@ -65,7 +65,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 # ── 1. Settings ────────────────────────────────────────────────────────────────
 
 MODEL_ID        = "mistralai/Mistral-7B-v0.1"
-DATASET_PATH    = "new_created_datset.json"
+DATASET_PATH    = "output.json"
 OUTPUT_DIR      = "./mistral_qlora-output_cl"
 # CPU offload is INCOMPATIBLE with 4-bit QLoRA training:
 #   - The 4-bit quantizer requires llm_int8_enable_fp32_cpu_offload=True to
@@ -162,6 +162,13 @@ model = prepare_model_for_kbit_training(
     use_gradient_checkpointing=True,
     gradient_checkpointing_kwargs={"use_reentrant": False},
 )
+
+# REQUIRED for gradient checkpointing + LoRA:
+# Without this, the input embeddings have no grad_fn → backward() crashes
+# with "element 0 of tensors does not require grad".
+# Llama-2 may skip this because its embedding ties work differently;
+# Mistral needs it explicitly.
+model.enable_input_require_grads()
 
 # ── 8. LoRA config ─────────────────────────────────────────────────────────────
 
