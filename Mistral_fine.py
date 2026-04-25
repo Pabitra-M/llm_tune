@@ -125,8 +125,9 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4",
     bnb_4bit_compute_dtype=torch.float16,
     bnb_4bit_use_double_quant=True,
-    # Required when offloading layers to CPU
-    llm_int8_enable_fp32_cpu_offload=USE_CPU_OFFLOAD,
+    # NOTE: llm_int8_enable_fp32_cpu_offload is an 8-bit-only flag.
+    # Do NOT set it here — it causes accelerate to block training when
+    # CPU offload layers are present. CPU offload is handled via device_map.
 )
 
 # ── 5. Build device map ────────────────────────────────────────────────────────
@@ -195,9 +196,12 @@ sft_config = SFTConfig(
     per_device_train_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=GRAD_ACCUM,
     learning_rate=LR,
-    fp16=True,
+    # fp16 must be False when layers are CPU-offloaded — mixed precision
+    # with CPU-offloaded layers causes a second accelerate crash.
+    fp16=not USE_CPU_OFFLOAD,
+    bf16=False,
     logging_steps=10,
-    eval_strategy="epoch",        # FIX 8: evaluation_strategy → eval_strategy
+    eval_strategy="epoch",
     save_strategy="epoch",
     load_best_model_at_end=True,
     gradient_checkpointing=True,
