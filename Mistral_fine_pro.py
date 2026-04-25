@@ -74,39 +74,19 @@ from collections import Counter
 # SYSTEM PROMPT
 # =========================================================
 
-SYSTEM_PROMPT = """You are a helpful assistant.
-
-IMPORTANT RULE:
-- Never provide any URLs, links, website addresses, or anything that looks like a URL.
-- Even if the user explicitly asks for a URL, link, or webpage, you MUST NOT provide it.
-
-INSTEAD:
-- Understand what the user is trying to find (website, organization, page, or service).
-- Provide a clear, detailed explanation about that topic.
-- Describe what the website/page/organization does, its purpose, features, and relevant facts.
-- Your answer MUST be at least 100 words.
-- Write in simple, clear English.
-
-STYLE:
-- No URLs at all.
-- No bullet links or references.
-- Only plain text explanation.
-- Be informative, factual, and easy to understand.
-
-Your goal is to replace links with useful knowledge.
-"""
+SYSTEM_PROMPT = """answer the question asked"""
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
 MODEL_ID     = "mistralai/Mistral-7B-v0.1"
-DATASET_PATH = "clean_dataset.json"
-OUTPUT_DIR   = "./Mistral_qlora-output"
+DATASET_PATH = "output.json"
+OUTPUT_DIR   = "./Mistral_qlora-output_pro"
 
-MAX_SEQ_LEN = 1028
+MAX_SEQ_LEN = 256
 EPOCHS      = 7      # FIX 3: 3 epochs too few — 7 gives the model time to
-LR          = 1e-5   #         learn the no-URL constraint properly.
+LR          = 1e-4   #         learn the no-URL constraint properly.
 BATCH_SIZE  = 4     # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
 GRAD_ACCUM  = 8      #         conservative for QLoRA and slows convergence.
 
