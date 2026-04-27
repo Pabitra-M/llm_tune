@@ -56,17 +56,16 @@ import json
 import re
 import torch
 import numpy as np
+import csv
+
+# 🔥 IMPORTANT (no GUI plotting)
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from datasets import Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-# FIX 1: Use SFTConfig instead of TrainingArguments — new trl API moves
-#         SFT-specific args (dataset_text_field, max_seq_length, packing)
-#         into SFTConfig. Using TrainingArguments + passing them to SFTTrainer
-#         causes TypeError.
 from trl import SFTTrainer, SFTConfig
 from rouge_score import rouge_scorer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -76,44 +75,7 @@ from collections import Counter
 # SYSTEM PROMPT
 # =========================================================
 
-SYSTEM_PROMPT = """ You are an expert evaluator (judge model) for factual question-answering systems.
-
-You will be given:
-1. A question
-2. A ground truth answer (fact-based, domain-specific)
-3. Four generated answers:
-   - Base Answer (original model output)
-   - Empathy Tone Answer
-   - Creative Tone Answer
-   - Logical Tone Answer
-
-Your task is to evaluate each generated answer strictly based on factual correctness and relevance.
-
-IMPORTANT RULES:
-- The dataset contains only factual domain knowledge.
-- Ignore tone, writing style, creativity, or emotional language.
-- Focus ONLY on:
-  1. Factual accuracy (Does it match the ground truth?)
-  2. Completeness (Does it cover key information?)
-  3. Hallucination (Any fake facts, misleading info, or fabricated URLs?)
-  4. Relevance (Does it answer the question properly?)
-
-Special Attention:
-- Penalize heavily if the answer includes:
-  - Fabricated URLs
-  - Unsafe or misleading navigation instructions
-  - Irrelevant steps unrelated to the actual question
-
-For each answer, provide:
-- Score (0 to 10)
-- Reason (brief explanation)
-
-Finally:
-- Rank all four answers from best to worst based on factual quality.
-
-Return output in JSON format:
-
-"""
+SYSTEM_PROMPT = """ You are an expert evaluator (judge model) for factual question-answering systems. You will be given: 1. A question 2. A ground truth answer (fact-based, domain-specific) 3. Four generated answers: - Base Answer (original model output) - Empathy Tone Answer - Creative Tone Answer - Logical Tone Answer Your task is to evaluate each generated answer strictly based on factual correctness and relevance. IMPORTANT RULES: - The dataset contains only factual domain knowledge. - Ignore tone, writing style, creativity, or emotional language. - Focus ONLY on: 1. Factual accuracy (Does it match the ground truth?) 2. Completeness (Does it cover key information?) 3. Hallucination (Any fake facts, misleading info, or fabricated URLs?) 4. Relevance (Does it answer the question properly?) Special Attention: - Penalize heavily if the answer includes: - Fabricated URLs - Unsafe or misleading navigation instructions - Irrelevant steps unrelated to the actual question For each answer, provide: - Score (0 to 10) - Reason (brief explanation) Finally: - Rank all four answers from best to worst based on factual quality. Return output in JSON format: """
 
 # =========================================================
 # SETTINGS
@@ -123,11 +85,10 @@ MODEL_ID = "tiiuae/falcon-7b"
 DATASET_PATH = "new_created_datset.json"
 OUTPUT_DIR = "./falcon_qlora-output"
 
-
 MAX_SEQ_LEN = 1028
-EPOCHS      = 7     # FIX 3: 3 epochs too few — 7 gives the model time to
-LR          = 1e-4   #         learn the no-URL constraint properly.
-BATCH_SIZE  = 5    # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
+EPOCHS      = 7
+LR          = 1e-4
+BATCH_SIZE  = 5
 GRAD_ACCUM  = 6  
 
 # =========================================================
@@ -141,10 +102,6 @@ def clean_answer(text):
 
 def is_valid_record(rec):
     return bool(rec.get("question") and rec.get("answer"))
-
-# =========================================================
-# LOAD DATASET
-# =========================================================
 
 def load_qa_dataset(path):
     with open(path, "r") as f:
@@ -171,20 +128,9 @@ def load_qa_dataset(path):
 
 dataset = load_qa_dataset(DATASET_PATH)
 
-print(f"[DATA] Records loaded: {len(dataset)}")
-
-if len(dataset) < 2:
-    raise ValueError(
-        f"Dataset has only {len(dataset)} record(s) — check that your JSON "
-        "has 'question' and 'answer' keys and is not empty."
-    )
-
 split = dataset.train_test_split(test_size=0.05, seed=42)
-
 train_dataset = split["train"]
 eval_dataset  = split["test"]
-
-print(f"[DATA] Train: {len(train_dataset)} | Eval: {len(eval_dataset)}\n")
 
 # =========================================================
 # MODEL
@@ -204,33 +150,23 @@ model = AutoModelForCausalLM.from_pretrained(
     quantization_config=bnb_config,
     device_map="auto",
     trust_remote_code=True,
-    max_memory={0: "6GB", "cpu": "32GB"},
-    offload_folder="offload",
 )
 
 model.config.use_cache = False
-
-# FIX 2: Call prepare_model_for_kbit_training with use_gradient_checkpointing=True
-#         and do NOT call model.gradient_checkpointing_enable() separately —
-#         prepare_model_for_kbit_training handles it internally, calling it
-#         twice causes a conflict.
 model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
 # =========================================================
 # LoRA
 # =========================================================
 
-# FIX 3: Removed the duplicate LoraConfig definition. The first block targeted
-#         LLaMA-style modules (q_proj etc.) which don't exist in Falcon — only
-#         the second block with Falcon-correct modules should remain.
 lora = LoraConfig(
     r=16,
     lora_alpha=32,
     target_modules=[
-        "query_key_value",   # Falcon attention
-        "dense",             # output
-        "dense_h_to_4h",     # MLP up
-        "dense_4h_to_h",     # MLP down
+        "query_key_value",
+        "dense",
+        "dense_h_to_4h",
+        "dense_4h_to_h",
     ],
     lora_dropout=0.05,
     bias="none",
@@ -238,16 +174,11 @@ lora = LoraConfig(
 )
 
 model = get_peft_model(model, lora)
-model.print_trainable_parameters()
 
 # =========================================================
 # TRAIN
 # =========================================================
 
-# FIX 1 (continued): SFTConfig replaces TrainingArguments. SFT-specific fields
-#                    (dataset_text_field, max_seq_length, packing) live here.
-#                    gradient_checkpointing=True is also set here, not in
-#                    TrainingArguments separately.
 sft_config = SFTConfig(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
@@ -256,12 +187,12 @@ sft_config = SFTConfig(
     learning_rate=LR,
     fp16=True,
     logging_steps=10,
+    logging_strategy="steps",
     eval_strategy="epoch",
     save_strategy="epoch",
     gradient_checkpointing=True,
     optim="paged_adamw_8bit",
     report_to="none",
-    # SFT-specific
     dataset_text_field="text",
     max_seq_length=MAX_SEQ_LEN,
     packing=False,
@@ -269,91 +200,67 @@ sft_config = SFTConfig(
 
 trainer = SFTTrainer(
     model=model,
-    processing_class=tokenizer,   # FIX 4: 'tokenizer=' is deprecated in new trl,
-    train_dataset=train_dataset,  #         use 'processing_class=' instead.
+    processing_class=tokenizer,
+    train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     args=sft_config,
 )
 
+# =========================================================
+# LOSS SAVE + PLOT
+# =========================================================
+
+def save_and_plot_loss(trainer, output_dir):
+    logs = trainer.state.log_history
+
+    train_loss, eval_loss = [], []
+    steps_train, steps_eval = [], []
+
+    for log in logs:
+        if "loss" in log and "step" in log:
+            train_loss.append(log["loss"])
+            steps_train.append(log["step"])
+        if "eval_loss" in log and "step" in log:
+            eval_loss.append(log["eval_loss"])
+            steps_eval.append(log["step"])
+
+    # CSV
+    with open(os.path.join(output_dir, "loss_log.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["step", "train_loss", "eval_loss"])
+        for i in range(len(steps_train)):
+            writer.writerow([steps_train[i], train_loss[i], ""])
+
+    # JSON
+    with open(os.path.join(output_dir, "loss_log.json"), "w") as f:
+        json.dump(logs, f, indent=2)
+
+    # Graph
+    plt.figure()
+    plt.plot(steps_train, train_loss, label="Train Loss")
+    if eval_loss:
+        plt.plot(steps_eval, eval_loss, label="Eval Loss")
+
+    plt.xlabel("Steps")
+    plt.ylabel("Loss")
+    plt.title("Loss Saturation Graph")
+    plt.legend()
+
+    plt.savefig(os.path.join(output_dir, "loss_curve.png"), dpi=300)
+    plt.close()
+
+    print("[SAVED] Loss CSV, JSON, and Graph")
+
+# =========================================================
+# RUN TRAINING
+# =========================================================
+
 print("Training...")
 trainer.train()
+
+save_and_plot_loss(trainer, OUTPUT_DIR)
 
 model.save_pretrained(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-# =========================================================
-# INFERENCE
-# =========================================================
-
-model.eval()
-
-def ask(q):
-    prompt = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{q} [/INST]"
-    inp = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-    with torch.no_grad():
-        out = model.generate(
-            **inp,
-            max_new_tokens=200,
-            do_sample=False,
-            num_beams=3,
-            length_penalty=0.8,
-        )
-
-    text = tokenizer.decode(out[0], skip_special_tokens=True)
-    return text.split("[/INST]")[-1].strip()
-
-# =========================================================
-# METRICS
-# =========================================================
-
-def tokenize(x):
-    return x.lower().split()
-
-def compute_prf(pred, ref):
-    p = Counter(tokenize(pred))
-    r = Counter(tokenize(ref))
-    overlap = sum((p & r).values())
-
-    precision = overlap / len(p) if len(p) else 0
-    recall    = overlap / len(r) if len(r) else 0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0
-
-    return precision, recall, f1
-
-# =========================================================
-# EVALUATION
-# =========================================================
-
-def evaluate():
-    res = []
-
-    for i, row in enumerate(eval_dataset):
-        pred = ask(row["question"])
-        ref  = row["answer"]
-
-        p, r, f1 = compute_prf(pred, ref)
-
-        bleu = sentence_bleu(
-            [tokenize(ref)],
-            tokenize(pred),
-            smoothing_function=SmoothingFunction().method1,
-        )
-
-        rouge = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)\
-                    .score(ref, pred)["rougeL"].fmeasure
-
-        res.append((p, r, f1, bleu, rouge))
-
-        print(f"[{i+1}] P={p:.3f} R={r:.3f} F1={f1:.3f} BLEU={bleu:.3f} ROUGE={rouge:.3f}")
-
-    avg = np.mean(res, axis=0)
-
-    print("\nFINAL:")
-    print(f"Precision: {avg[0]:.4f}")
-    print(f"Recall:    {avg[1]:.4f}")
-    print(f"F1:        {avg[2]:.4f}")
-    print(f"BLEU:      {avg[3]:.4f}")
-    print(f"ROUGE:     {avg[4]:.4f}")
-
-evaluate()
+print("✅ Training Complete")
