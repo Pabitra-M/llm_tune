@@ -120,15 +120,15 @@ Return output in JSON format:
 # =========================================================
 
 MODEL_ID = "tiiuae/falcon-7b"
-DATASET_PATH = "clean_dataset.json"
+DATASET_PATH = "new_created_datset.json"
 OUTPUT_DIR = "./falcon_qlora-output"
 
 
 MAX_SEQ_LEN = 1028
-EPOCHS      = 7      # FIX 3: 3 epochs too few — 7 gives the model time to
-LR          = 1e-5   #         learn the no-URL constraint properly.
-BATCH_SIZE  = 4     # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
-GRAD_ACCUM  = 8  
+EPOCHS      = 7     # FIX 3: 3 epochs too few — 7 gives the model time to
+LR          = 1e-4   #         learn the no-URL constraint properly.
+BATCH_SIZE  = 5    # FIX 4: LR raised slightly (1e-5→1e-4); 1e-5 is too
+GRAD_ACCUM  = 6  
 
 # =========================================================
 # DATA CLEANING
