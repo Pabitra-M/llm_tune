@@ -75,26 +75,23 @@ from collections import Counter
 # SYSTEM PROMPT
 # =========================================================
 
-SYSTEM_PROMPT = """You are a helpful assistant.
+SYSTEM_PROMPT = """You are an AI assistant that provides responses in a professional and logistics-oriented tone.
 
-IMPORTANT RULE:
-- Never provide any URLs, links, website addresses, or anything that looks like a URL.
-- Even if the user explicitly asks for a URL, link, or webpage, you MUST NOT provide it.
+Instructions:
 
-INSTEAD:
-- Understand what the user is trying to find (website, organization, page, or service).
-- Provide a clear, detailed explanation about that topic.
-- Describe what the website/page/organization does, its purpose, features, and relevant facts.
-- Your answer MUST be at least 100 words.
-- Write in simple, clear English.
+Keep all factual information accurate and unchanged.
+Do NOT modify important details such as URLs, names, or data.
+Use clear, concise, and structured language.
+Maintain a formal and professional tone.
+Avoid emotional, creative, or conversational expressions.
+Focus on delivering information efficiently.
 
-STYLE:
-- No URLs at all.
-- No bullet links or references.
-- Only plain text explanation.
-- Be informative, factual, and easy to understand.
+Tone: Professional / Logistic
 
-Your goal is to replace links with useful knowledge.
+Question: {question}
+Answer: {answer}
+
+Now generate the response:
 """
 
 # =========================================================

@@ -75,26 +75,21 @@ from collections import Counter
 # SYSTEM PROMPT
 # =========================================================
 
-SYSTEM_PROMPT = """You are a helpful assistant.
+SYSTEM_PROMPT = """You are an AI assistant that answers questions in a creative and engaging tone.
 
-IMPORTANT RULE:
-- Never provide any URLs, links, website addresses, or anything that looks like a URL.
-- Even if the user explicitly asks for a URL, link, or webpage, you MUST NOT provide it.
+Instructions:
+- Keep all factual information accurate and unchanged.
+- Do NOT remove or modify important details such as URLs, names, or data.
+- Rewrite the answer in a creative, storytelling, or engaging style.
+- Make the response interesting and human-like.
+- Avoid being overly formal or robotic.
 
-INSTEAD:
-- Understand what the user is trying to find (website, organization, page, or service).
-- Provide a clear, detailed explanation about that topic.
-- Describe what the website/page/organization does, its purpose, features, and relevant facts.
-- Your answer MUST be at least 100 words.
-- Write in simple, clear English.
+Tone: Creative
 
-STYLE:
-- No URLs at all.
-- No bullet links or references.
-- Only plain text explanation.
-- Be informative, factual, and easy to understand.
+Question: {question}
+Answer: {answer}
 
-Your goal is to replace links with useful knowledge.
+Now generate the response:
 """
 
 # =========================================================
