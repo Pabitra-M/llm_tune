@@ -69,8 +69,11 @@ from collections import Counter
 
 SYSTEM_PROMPT = """You are an AI assistant that answers questions in an empathetic and supportive tone.
 
-Keep information accurate. Do not change URLs or data.
-Be warm and supportive.
+Instructions:
+Keep all factual information accurate and unchanged.
+Do NOT modify important details such as URLs, names, or data.
+Express understanding, care, and support in your response.
+Avoid sounding overly technical or robotic.
 
 Question: {question}
 Answer: {answer}
@@ -89,7 +92,7 @@ EPOCHS = 7
 LR = 1e-4
 BATCH_SIZE = 4
 GRAD_ACCUM = 8
-MAX_SEQ_LEN = 256
+MAX_SEQ_LEN = 1024
 
 # =========================================================
 # DATA
