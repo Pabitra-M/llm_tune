@@ -10,7 +10,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 MIN_FREE_MIB  = 8000
 POLL_INTERVAL = 30
-MAX_WAIT      = 1800   # ✅ 30 minutes
+MAX_WAIT      = 1800
 
 def wait_for_gpu():
     start_time = time.time()
@@ -95,7 +95,7 @@ GRAD_ACCUM = 8
 MAX_SEQ_LEN = 1024
 
 # =========================================================
-# DATA
+# DATA (FIXED)
 # =========================================================
 
 def clean_answer(t):
@@ -103,19 +103,34 @@ def clean_answer(t):
 
 def load_data(path):
     data = json.load(open(path))
+
     out = []
     for r in data:
         if not r.get("question") or not r.get("answer"):
             continue
+
         q = r["question"].strip()
         a = clean_answer(r["answer"])
 
-        text = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{q} [/INST] {a} </s>"
-        out.append({"text": text, "question": q, "answer": a})
+        # ✅ FIX: proper formatting
+        formatted_prompt = SYSTEM_PROMPT.format(question=q, answer=a)
+
+        text = f"<s>[INST] <<SYS>>\n{formatted_prompt}\n<</SYS>>\n\n{q} [/INST] {a} </s>"
+
+        out.append({
+            "text": text,
+            "question": q,
+            "answer": a
+        })
+
     return Dataset.from_list(out)
 
 dataset = load_data(DATASET_PATH)
-split = dataset.train_test_split(test_size=0.05)
+
+# ✅ FIX: shuffle + proper split
+dataset = dataset.shuffle(seed=42)
+split = dataset.train_test_split(test_size=0.2, seed=42)
+
 train_dataset = split["train"]
 eval_dataset = split["test"]
 
@@ -146,7 +161,7 @@ lora = LoraConfig(
 model = get_peft_model(model, lora)
 
 # =========================================================
-# TRAIN CONFIG
+# TRAIN CONFIG (UNCHANGED)
 # =========================================================
 
 config = SFTConfig(
@@ -155,15 +170,12 @@ config = SFTConfig(
     per_device_train_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=GRAD_ACCUM,
     learning_rate=LR,
-
     logging_steps=5,
     eval_strategy="epoch",
     save_strategy="epoch",
-
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
     greater_is_better=False,
-
     dataset_text_field="text",
     max_seq_length=MAX_SEQ_LEN
 )
@@ -183,38 +195,64 @@ trainer = SFTTrainer(
 trainer.train()
 
 # =========================================================
-# LOSS TRACKING + SAVE PLOT
+# LOSS TRACKING
 # =========================================================
 
 history = trainer.state.log_history
 
 train_loss, eval_loss = [], []
+steps_train, steps_eval = [], []
 
 for log in history:
-    if "loss" in log:
+    if "loss" in log and "step" in log:
         train_loss.append(log["loss"])
-    if "eval_loss" in log:
-        eval_loss.append(log["eval_loss"])
+        steps_train.append(log["step"])
 
-print("Final Train Loss:", train_loss[-1])
+    if "eval_loss" in log and "step" in log:
+        eval_loss.append(log["eval_loss"])
+        steps_eval.append(log["step"])
+
+# SAVE FULL LOSS ARRAY
+full_loss_array = []
+
+for log in history:
+    full_loss_array.append({
+        "step": log.get("step"),
+        "train_loss": log.get("loss"),
+        "eval_loss": log.get("eval_loss"),
+        "epoch": log.get("epoch"),
+        "learning_rate": log.get("learning_rate")
+    })
+
+with open("mistral_full_loss.json", "w") as f:
+    json.dump(full_loss_array, f, indent=4)
+
+print("✅ Full loss saved")
+
+# PRINT FINAL
+print("Final Train Loss:", train_loss[-1] if train_loss else "N/A")
 print("Final Eval Loss:", eval_loss[-1] if eval_loss else "N/A")
 
 if eval_loss:
     print("Perplexity:", math.exp(eval_loss[-1]))
 
-# ✅ PLOT + SAVE
+# =========================================================
+# PLOT
+# =========================================================
+
 plt.figure(figsize=(8,5))
-plt.plot(train_loss, label="Train Loss")
+plt.plot(steps_train, train_loss, label="Train Loss")
+
 if eval_loss:
-    plt.plot(eval_loss, label="Eval Loss")
+    plt.plot(steps_eval, eval_loss, label="Eval Loss")
 
 plt.xlabel("Steps")
 plt.ylabel("Loss")
-plt.title("Mistral Loss Curve")
+plt.title("Training vs Evaluation Loss")
 plt.legend()
 
-plt.savefig("mistral_loss.png", dpi=300, bbox_inches="tight")
-plt.show()
+plt.savefig("mistral_loss.png", dpi=300)
+plt.close()
 
 # =========================================================
 # INFERENCE
@@ -222,14 +260,17 @@ plt.show()
 
 def ask(q):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    prompt = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{q} [/INST]"
+
+    prompt = SYSTEM_PROMPT.format(question=q, answer="")
+    prompt = f"<s>[INST] <<SYS>>\n{prompt}\n<</SYS>>\n\n{q} [/INST]"
+
     inp = tokenizer(prompt, return_tensors="pt").to(device)
 
     out = model.generate(**inp, max_new_tokens=200)
     return tokenizer.decode(out[0], skip_special_tokens=True)
 
 # =========================================================
-# METRICS
+# METRICS (UNCHANGED)
 # =========================================================
 
 def tok(x): return x.lower().split()
@@ -244,6 +285,7 @@ def prf(p, r):
 
 def evaluate():
     scores = []
+
     for row in eval_dataset:
         pred = ask(row["question"])
         ref = row["answer"]
