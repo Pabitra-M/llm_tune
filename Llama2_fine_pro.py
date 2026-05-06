@@ -85,7 +85,7 @@ Now generate the response:
 # SETTINGS  ← tweak only here
 # =========================================================
 MODEL_ID     = "NousResearch/Llama-2-7b-chat-hf"
-DATASET_PATH = "clean_dataset.json"
+DATASET_PATH = "new_created_datset.json"
 OUTPUT_DIR   = "./Llama2_qlora-output_cl"
 
 MAX_SEQ_LEN      = 512     # increased from 256 — too small cuts answers
