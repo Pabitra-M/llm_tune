@@ -5,9 +5,10 @@ import os, subprocess, time
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+
 MIN_FREE_MIB  = 8000
-POLL_INTERVAL = 60
-MAX_WAIT      = 3600
+POLL_INTERVAL = 30
+MAX_WAIT      = 1800
 
 def wait_for_gpu():
     start = time.time()
@@ -55,12 +56,11 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 from collections import Counter
 from bert_score import score as bert_score
-from rouge_score import rouge_scorer
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from bart_score import BARTScorer                          # ← ADDED
 from nltk.tokenize import word_tokenize
 
 # =========================================================
-# SYSTEM PROMPT  ← unchanged from your original
+# SYSTEM PROMPT
 # =========================================================
 SYSTEM_PROMPT = """You are an AI assistant that answers questions in a creative and engaging tone.
 
@@ -80,17 +80,17 @@ Now generate the response:
 """
 
 # =========================================================
-# SETTINGS  ← tweak only here
+# SETTINGS
 # =========================================================
 MODEL_ID     = "NousResearch/Meta-Llama-3-8B"
 DATASET_PATH = "clean_dataset.json"
 OUTPUT_DIR   = "./Llama3_qlora-output"
 
-MAX_SEQ_LEN      = 512     # increased from 256 — too small cuts answers
-EPOCHS           = 10      # more epochs so loss drops properly
+MAX_SEQ_LEN      = 512
+EPOCHS           = 10
 LR               = 2e-4
-BATCH_SIZE       = 2       # increased from 1
-GRAD_ACCUM       = 4       # effective batch = 8
+BATCH_SIZE       = 2
+GRAD_ACCUM       = 4
 MIN_CONFIDENCE   = 0.4
 MIN_ANSWER_WORDS = 80
 
@@ -132,7 +132,6 @@ def load_dataset(path):
         if len(a.split()) < MIN_ANSWER_WORDS:
             continue
 
-        # Llama-3 uses same chat format — unchanged from your original
         text = f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n{q} [/INST] {a}</s>"
         data.append({"text": text, "question": q, "answer": a})
 
@@ -150,7 +149,6 @@ split         = dataset.train_test_split(test_size=0.1, seed=42)
 train_dataset = split["train"]
 eval_dataset  = split["test"]
 
-# Show steps per epoch so you know when eval fires
 steps_per_epoch = max(1, len(train_dataset) // (BATCH_SIZE * GRAD_ACCUM))
 total_steps     = steps_per_epoch * EPOCHS
 print(f"   Train: {len(train_dataset)} | Eval: {len(eval_dataset)}")
@@ -163,12 +161,12 @@ bnb = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
     bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_use_double_quant=True,   # extra memory saving
+    bnb_4bit_use_double_quant=True,
 )
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 tokenizer.pad_token    = tokenizer.eos_token
-tokenizer.padding_side = "right"   # MUST be right for causal LM
+tokenizer.padding_side = "right"
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
@@ -177,18 +175,18 @@ model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True,
 )
 
-model.config.use_cache      = False   # required during training
-model.config.pretraining_tp = 1       # prevents tensor parallel issues
+model.config.use_cache      = False
+model.config.pretraining_tp = 1
 
 model = prepare_model_for_kbit_training(model)
 model.gradient_checkpointing_enable()
 
 # =========================================================
-# LoRA  ← higher rank for better convergence
+# LoRA
 # =========================================================
 lora = LoraConfig(
-    r=32,               # increased from 16
-    lora_alpha=64,      # always 2x r
+    r=32,
+    lora_alpha=64,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     lora_dropout=0.05,
     bias="none",
@@ -201,8 +199,6 @@ model.print_trainable_parameters()
 # =========================================================
 # TRAIN CONFIG
 # =========================================================
-
-# Auto-switch eval strategy for small datasets
 if steps_per_epoch < 5:
     _eval_strategy = "steps"
     _eval_steps    = 5
@@ -217,25 +213,15 @@ else:
 
 config = SFTConfig(
     output_dir=OUTPUT_DIR,
-
-    # Core training
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=GRAD_ACCUM,
     learning_rate=LR,
-
-    # LR schedule
     lr_scheduler_type="cosine",
-    warmup_ratio=0.1,           # 10% warmup prevents loss spike at start
-
-    # Precision
+    warmup_ratio=0.1,
     fp16=True,
-    optim="paged_adamw_8bit",   # memory efficient for QLoRA
-
-    # Logging
+    optim="paged_adamw_8bit",
     logging_steps=5,
-
-    # Eval & Save
     eval_strategy=_eval_strategy,
     eval_steps=_eval_steps,
     save_strategy=_save_strategy,
@@ -244,11 +230,8 @@ config = SFTConfig(
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
     greater_is_better=False,
-
-    # Sequence
     max_seq_length=MAX_SEQ_LEN,
     dataset_text_field="text",
-
     report_to="none",
 )
 
@@ -287,7 +270,6 @@ def save_loss(trainer):
             eval_loss.append(log["eval_loss"])
             steps_eval.append(log["step"])
 
-    # Save JSON
     json.dump(
         [{"step": s, "loss": l} for s, l in zip(steps_train, train_loss)],
         open(os.path.join(OUTPUT_DIR, "train_loss.json"), "w"), indent=4
@@ -301,7 +283,6 @@ def save_loss(trainer):
         open(os.path.join(OUTPUT_DIR, "full_loss_log.json"), "w"), indent=4
     )
 
-    # Plot
     plt.figure(figsize=(12, 5))
     plt.plot(steps_train, train_loss,
              label="Train Loss", linewidth=2, color="steelblue")
@@ -331,7 +312,6 @@ def save_loss(trainer):
     plt.savefig(os.path.join(OUTPUT_DIR, "loss_curve.png"), dpi=300)
     plt.close()
 
-    # Summary
     print("\n📉 LOSS SUMMARY:")
     if train_loss:
         print(f"   Train — start: {train_loss[0]:.4f} | end: {train_loss[-1]:.4f} | "
@@ -374,7 +354,6 @@ def ask(model, tokenizer, question):
             pad_token_id=tokenizer.eos_token_id,
         )
 
-    # Only decode newly generated tokens
     input_len  = inputs["input_ids"].shape[1]
     gen_tokens = out[0][input_len:]
     return tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
@@ -407,8 +386,8 @@ def evaluate(model, tokenizer, dataset, num_debug=3):
     preds, refs        = [], []
     results_per_sample = []
 
-    scorer   = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
-    smoother = SmoothingFunction().method1
+    # ── BART scorer (runs on same GPU, bartscore uses facebook/bart-large-cnn) ──
+    bart_scorer = BARTScorer(device=merged.device, checkpoint="facebook/bart-large-cnn")
 
     for i, row in enumerate(dataset):
         pred = ask(merged, tokenizer, row["question"])
@@ -416,42 +395,44 @@ def evaluate(model, tokenizer, dataset, num_debug=3):
 
         p, r, f1 = compute_prf(pred, ref)
 
-        bleu = sentence_bleu(
-            [tokenize_text(ref)],
-            tokenize_text(pred),
-            smoothing_function=smoother
-        )
+        results_per_sample.append((p, r, f1))
 
-        rouge = scorer.score(ref, pred)["rougeL"].fmeasure
-
-        results_per_sample.append((p, r, f1, bleu, rouge))
-
-        # Debug: show first N samples
         if i < num_debug:
             print(f"\n{'='*60}")
             print(f"[Sample {i+1}]")
             print(f"QUESTION : {row['question'][:120]}")
             print(f"PREDICTED: {pred[:300]}")
             print(f"REFERENCE: {ref[:300]}")
-            print(f"P={p:.3f} R={r:.3f} F1={f1:.3f} BLEU={bleu:.3f} ROUGE={rouge:.3f}")
+            print(f"P={p:.3f} R={r:.3f} F1={f1:.3f}")
             print(f"{'='*60}")
 
         preds.append(pred)
         refs.append(ref)
 
-    # BERTScore
+    # ── BERTScore ──────────────────────────────────────────────────────────────
     _, _, bF = bert_score(preds, refs, lang="en", verbose=False)
+
+    # ── BARTScore (F1 = avg of P→R and R→P directions) ────────────────────────
+    # bart_scorer.score(srcs, tgts) returns log-prob scores (higher = better)
+    bart_p_scores = bart_scorer.score(refs, preds, batch_size=4)   # ref → pred (precision)
+    bart_r_scores = bart_scorer.score(preds, refs, batch_size=4)   # pred → ref (recall)
+
+    bart_precision = float(np.mean(bart_p_scores))
+    bart_recall    = float(np.mean(bart_r_scores))
+    bart_f1        = float(np.mean([(p + r) / 2
+                                    for p, r in zip(bart_p_scores, bart_r_scores)]))
 
     avg = np.mean(results_per_sample, axis=0)
 
     final_results = {
-        "num_samples": len(preds),
-        "Precision":   float(avg[0]),
-        "Recall":      float(avg[1]),
-        "F1":          float(avg[2]),
-        "BLEU":        float(avg[3]),
-        "ROUGE-L":     float(avg[4]),
-        "BERTScore":   float(bF.mean()),
+        "num_samples":     len(preds),
+        "Precision":       float(avg[0]),
+        "Recall":          float(avg[1]),
+        "F1":              float(avg[2]),
+        "BERTScore":       float(bF.mean()),
+        "BART_Precision":  bart_precision,   # ← ADDED
+        "BART_Recall":     bart_recall,      # ← ADDED
+        "BART_F1":         bart_f1,          # ← ADDED
     }
 
     json.dump(final_results,
