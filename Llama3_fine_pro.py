@@ -5,10 +5,9 @@ import os, subprocess, time
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-
 MIN_FREE_MIB  = 8000
-POLL_INTERVAL = 30
-MAX_WAIT      = 1800
+POLL_INTERVAL = 60
+MAX_WAIT      = 3600
 
 def wait_for_gpu():
     start = time.time()
@@ -51,12 +50,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from datasets import Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
+    BartForConditionalGeneration, BartTokenizer,              # ← for BARTScore
+)
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 from collections import Counter
 from bert_score import score as bert_score
-from bart_score import BARTScorer                          # ← ADDED
 from nltk.tokenize import word_tokenize
 
 # =========================================================
@@ -333,6 +334,52 @@ def save_loss(trainer):
     print("\n✅ Loss data + graph saved")
 
 # =========================================================
+# BART SCORE (no extra package — uses transformers directly)
+# =========================================================
+def get_bart_scores(srcs, tgts, device, batch_size=4,
+                    checkpoint="facebook/bart-large-cnn"):
+    """
+    Computes BARTScore log-prob for each (src → tgt) pair.
+    Higher (less negative) = better.
+    Precision : get_bart_scores(refs,  preds)   ref  → pred
+    Recall    : get_bart_scores(preds, refs)    pred → ref
+    """
+    bart_tok = BartTokenizer.from_pretrained(checkpoint)
+    bart_mod = BartForConditionalGeneration.from_pretrained(
+        checkpoint, torch_dtype=torch.float16
+    ).to(device)
+    bart_mod.eval()
+
+    all_scores = []
+    for i in range(0, len(srcs), batch_size):
+        src_batch = srcs[i : i + batch_size]
+        tgt_batch = tgts[i : i + batch_size]
+
+        src_enc = bart_tok(
+            src_batch, return_tensors="pt",
+            truncation=True, max_length=1024, padding=True
+        ).to(device)
+
+        tgt_ids = bart_tok(
+            tgt_batch, return_tensors="pt",
+            truncation=True, max_length=1024, padding=True
+        ).input_ids.to(device)
+
+        # mask padding so it doesn't contribute to loss
+        tgt_ids[tgt_ids == bart_tok.pad_token_id] = -100
+
+        with torch.no_grad():
+            loss = bart_mod(**src_enc, labels=tgt_ids).loss
+
+        all_scores.append(-loss.item())   # negate: higher = better
+
+    bart_mod.cpu()
+    del bart_mod
+    torch.cuda.empty_cache()
+
+    return all_scores
+
+# =========================================================
 # INFERENCE
 # =========================================================
 def ask(model, tokenizer, question):
@@ -359,7 +406,7 @@ def ask(model, tokenizer, question):
     return tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
 
 # =========================================================
-# METRICS
+# METRICS HELPER
 # =========================================================
 def tokenize_text(x):
     return word_tokenize(x.lower())
@@ -386,15 +433,11 @@ def evaluate(model, tokenizer, dataset, num_debug=3):
     preds, refs        = [], []
     results_per_sample = []
 
-    # ── BART scorer (runs on same GPU, bartscore uses facebook/bart-large-cnn) ──
-    bart_scorer = BARTScorer(device=merged.device, checkpoint="facebook/bart-large-cnn")
-
     for i, row in enumerate(dataset):
         pred = ask(merged, tokenizer, row["question"])
         ref  = row["answer"]
 
         p, r, f1 = compute_prf(pred, ref)
-
         results_per_sample.append((p, r, f1))
 
         if i < num_debug:
@@ -409,30 +452,33 @@ def evaluate(model, tokenizer, dataset, num_debug=3):
         preds.append(pred)
         refs.append(ref)
 
-    # ── BERTScore ──────────────────────────────────────────────────────────────
+    # ── BERTScore ──────────────────────────────────────────
+    print("\n⏳ Computing BERTScore...")
     _, _, bF = bert_score(preds, refs, lang="en", verbose=False)
 
-    # ── BARTScore (F1 = avg of P→R and R→P directions) ────────────────────────
-    # bart_scorer.score(srcs, tgts) returns log-prob scores (higher = better)
-    bart_p_scores = bart_scorer.score(refs, preds, batch_size=4)   # ref → pred (precision)
-    bart_r_scores = bart_scorer.score(preds, refs, batch_size=4)   # pred → ref (recall)
+    # ── BARTScore ──────────────────────────────────────────
+    print("⏳ Computing BARTScore (downloads bart-large-cnn if first run)...")
+    device = merged.device
+    bart_p_scores = get_bart_scores(refs,  preds, device=device)  # ref  → pred
+    bart_r_scores = get_bart_scores(preds, refs,  device=device)  # pred → ref
 
     bart_precision = float(np.mean(bart_p_scores))
     bart_recall    = float(np.mean(bart_r_scores))
-    bart_f1        = float(np.mean([(p + r) / 2
-                                    for p, r in zip(bart_p_scores, bart_r_scores)]))
+    bart_f1        = float(np.mean(
+        [(p + r) / 2 for p, r in zip(bart_p_scores, bart_r_scores)]
+    ))
 
     avg = np.mean(results_per_sample, axis=0)
 
     final_results = {
-        "num_samples":     len(preds),
-        "Precision":       float(avg[0]),
-        "Recall":          float(avg[1]),
-        "F1":              float(avg[2]),
-        "BERTScore":       float(bF.mean()),
-        "BART_Precision":  bart_precision,   # ← ADDED
-        "BART_Recall":     bart_recall,      # ← ADDED
-        "BART_F1":         bart_f1,          # ← ADDED
+        "num_samples":    len(preds),
+        "Precision":      float(avg[0]),
+        "Recall":         float(avg[1]),
+        "F1":             float(avg[2]),
+        "BERTScore":      float(bF.mean()),
+        "BART_Precision": bart_precision,
+        "BART_Recall":    bart_recall,
+        "BART_F1":        bart_f1,
     }
 
     json.dump(final_results,
